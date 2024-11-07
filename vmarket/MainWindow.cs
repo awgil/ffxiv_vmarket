@@ -67,6 +67,8 @@ public unsafe struct RequestInteract
 // 6.f. lua OnScene_CallRetainer -> ... (1.g)
 public unsafe class MainWindow : Window, IDisposable
 {
+    private readonly Widget.ItemList _itemList = new();
+
     private Hook<NetworkModuleProxy.Delegates.ProcessPacketEventPlay> _processPacketEventPlayHook;
     private bool _suppressEventPlay;
     private ushort _curEventStage;
@@ -84,8 +86,50 @@ public unsafe class MainWindow : Window, IDisposable
 
     public override void Draw()
     {
-        // TODO: search sidebar
+        using var tabs = ImRaii.TabBar("tabs");
+        if (!tabs)
+            return;
 
+        using (var tabMarket = ImRaii.TabItem("Market"))
+        {
+            if (tabMarket)
+            {
+                using (var c = ImRaii.Child("itemList", new(267 * ImGui.GetIO().FontGlobalScale, 0), true))
+                {
+                    if (c)
+                    {
+                        _itemList.Draw();
+                    }
+                }
+                ImGui.SameLine();
+
+                using var ch = ImRaii.Child("rest");
+                if (ch)
+                {
+                    ImGui.TextUnformatted("hi!");
+                }
+            }
+        }
+
+        using (var tabListings = ImRaii.TabItem("My listings"))
+        {
+            if (tabListings)
+            {
+                ImGui.TextUnformatted("hello!");
+            }
+        }
+
+        using (var tabDebug = ImRaii.TabItem("Debug"))
+        {
+            if (tabDebug)
+            {
+                DrawDebug();
+            }
+        }
+    }
+
+    private void DrawDebug()
+    {
         ImGui.Checkbox($"Suppress EventPlay packet delivery (stage={_curEventStage})###suppress", ref _suppressEventPlay);
 
         var infoProxy = (InfoProxyItemSearch*)InfoModule.Instance()->InfoProxies[(int)InfoProxyId.ItemSearch].Value;
