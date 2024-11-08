@@ -2,6 +2,9 @@
 using Dalamud.Interface.Utility.Raii;
 using Dalamud.Interface.Windowing;
 using FFXIVClientStructs.FFXIV.Client.Game;
+using FFXIVClientStructs.FFXIV.Client.Game.Character;
+using FFXIVClientStructs.FFXIV.Client.Game.Object;
+using FFXIVClientStructs.FFXIV.Client.Game.UI;
 using FFXIVClientStructs.FFXIV.Client.Network;
 using FFXIVClientStructs.FFXIV.Client.System.Framework;
 using FFXIVClientStructs.FFXIV.Client.System.String;
@@ -67,7 +70,9 @@ public unsafe struct RequestInteract
 // 6.f. lua OnScene_CallRetainer -> ... (1.g)
 public unsafe class MainWindow : Window, IDisposable
 {
+    private readonly Interop.Marketboard _mb = new();
     private readonly Widget.ItemList _itemList = new();
+    private readonly Widget.ItemListings _itemListings = new();
 
     private Hook<NetworkModuleProxy.Delegates.ProcessPacketEventPlay> _processPacketEventPlayHook;
     private bool _suppressEventPlay;
@@ -82,6 +87,7 @@ public unsafe class MainWindow : Window, IDisposable
     public void Dispose()
     {
         _processPacketEventPlayHook.Dispose();
+        _mb.Dispose();
     }
 
     public override void Draw()
@@ -106,7 +112,11 @@ public unsafe class MainWindow : Window, IDisposable
                 using var ch = ImRaii.Child("rest");
                 if (ch)
                 {
-                    ImGui.TextUnformatted("hi!");
+                    var player = (Character*)GameObjectManager.Instance()->Objects.IndexSorted[0].Value;
+                    if (_itemList.SelectedItem != 0 && player != null)
+                    {
+                        _itemListings.Draw(_itemList.SelectedItem, player->CurrentWorld, _mb, player->ContentId);
+                    }
                 }
             }
         }
@@ -135,11 +145,7 @@ public unsafe class MainWindow : Window, IDisposable
         var infoProxy = (InfoProxyItemSearch*)InfoModule.Instance()->InfoProxies[(int)InfoProxyId.ItemSearch].Value;
         if (ImGui.Button("Search..."))
         {
-            infoProxy->SearchItemId = 4850; // honey
-            infoProxy->Unk_0x24 = 2;
-            infoProxy->Unk_0x25 = 9;
-            infoProxy->Unk_0x28 = 0;
-            infoProxy->RequestData();
+            _mb.Request(4850); // honey
         }
 
         ImGui.SameLine();
