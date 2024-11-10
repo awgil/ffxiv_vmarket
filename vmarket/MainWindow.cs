@@ -145,7 +145,14 @@ public unsafe class MainWindow : Window, IDisposable
         var infoProxy = (InfoProxyItemSearch*)InfoModule.Instance()->InfoProxies[(int)InfoProxyId.ItemSearch].Value;
         if (ImGui.Button("Search..."))
         {
-            _mb.Request(4850); // honey
+            _mb.ExecuteRequest(37094); // nilopala nourishments painting
+            //_mb.ExecuteRequest(20042); // abalathian bitterling
+            //_mb.ExecuteRequest(5267); // fine sand
+            //_mb.ExecuteRequest(4850); // honey
+            //Service.Framework.DelayTicks(10).ContinueWith(t =>
+            //{
+            //    _mb.ExecuteRequest(4850); // honey
+            //});
         }
 
         ImGui.SameLine();

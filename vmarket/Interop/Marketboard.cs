@@ -47,15 +47,231 @@ public unsafe struct MarketBoardItemListing
 }
 
 // how marketboard requests work:
-// - client sends 'request item' ipc, gets back MarketBoardItemRequestStart server ipc that contains num items (max 100)
-// - client then sends 'request page' ipc (with starting index = 0), gets back MarketBoardOfferings server ipc that contains next page (10 listings) and starting index for next page (0 if it's the last page)
-// - InfoProxyItemSearch handles this request-response sequence, 
-// - if at any point server ipc 'request sequence id' does not match what infoproxy expects, it abandons the sequence and sends 'request page' ipc with starting index == -1
+// - normal flow
+// -- client sends 'request item listings' ipc, specifies item id and some unknown search params; InfoProxyItemSearch sets 'waiting for data' to false
+// -- server sends 'item listings summary' ipc, contains error message (0 normally) and num listings (max 100); note that there is no item id!
+// --- if item count is > 0, proxy sets 'waiting for data' flag and increments sequence id, then client sends 'request item listings page' ipc (specifies page start 0 and sequence id, no item id!)
+// --- server sends 'item listings page' ipc, contains 10 entries, page start index and next page start index (if more data is available) or 0 (if this is the last page)
+// --- if more data is available, proxy saves page data in the fields (if 'waiting for data' flag is still set) and sends another 'request item listings page' ipc (with next-page start index and same sequence id)
+// --- if no more data is available, the process ends (no more ipcs, 'waiting for data' flags remains set)
+// --- if there are no items (item count == 0 in summary), none of the page requests happen: proxy list remains empty, 'waiting for data' flag remains unset
+// --- if at any time sequence index of the 'item listings page' does not match what proxy expects, it sends 'request item listings page' ipc with next-page start index == -1 and sequence id from packet
+// ---- this seems to be broken and will lead to the infinite request-response loop: server will respond with another page with same sequence id, which will again mismatch what proxy has, so proxy will repeat the same step
+// -- at the same time server sends 'item history' ipc, contains item id and first 20 history entries
+// --- similar loop driven by InfoProxyCategorySearch (TODO describe)
+// - second request flow
+// -- proxy doesn't have any rate limiting logic - on second request, it again sends 'request item listings' ipc and clears 'waiting for data' flag
+// -- server responds with 'item listings summary' ipc with 0 items and non-zero error message
+// -- proxy then clears the internal list and does nothing (does not touch sequence id or 'waiting for data' flag)
+// -- this means that the response-request sequence for the previously requested item continues uninterrupted until the normal end - however, since 'waiting for data' flag is cleared, data is not added to the proxy lists
+// -- if two 'request item listings' ipc are sent one after another, the error response for the subsequent one can arrive before the normal success response for the first request
 // TODO: reverse meaning of request params
-public unsafe sealed class Marketboard : IDisposable
+
+// low-level utility for fetching marketboard listings
+// it uses existing code in InfoProxyItemSearch to drive the request-response sequence, hooks its functions and emits events when new data is available
+// it does not provide any rate limiting itself, however it exposes fields that can be used to judge whether a request can succeed
+// it also stores the received data internally, which is not affected by interruptions like proxy's built-in list is
+public unsafe sealed class MarketboardListings : IDisposable
 {
+    public DateTime NextSafeRequest { get; private set; } // minimal time when we expect new request to succeed
+    public MarketListings? CurrentRequest { get; private set; } // if non null, this is the request that is being filled with ongoing request-response sequence
+
+    public bool IsRequestLikelyToSucceed => DateTime.Now >= NextSafeRequest;
+
+    // event emitted whenever some data from server is received
+    // first it is emitted for a given request with no listings, when 'summary' ipc is received; the fetch time is set only if request is successful
+    // then it is emitted when more listings are received
+    public event Action<MarketListings>? ReceivedData;
+
+    private InfoProxyItemSearch* _proxy = (InfoProxyItemSearch*)InfoModule.Instance()->InfoProxies[(int)InfoProxyId.ItemSearch].Value;
+    private Hook<InfoProxyItemSearch.Delegates.RequestData> _requestDataHook;
+    private Hook<InfoProxyItemSearch.Delegates.ProcessRequestResult> _processRequestHook;
+    private Hook<InfoProxyItemSearch.Delegates.AddPage> _addPageHook;
+    private readonly List<MarketListings> _submittedRequests = [];
+    private bool _waitingForServerResponse;
+
     private const float RateLimit = 1; // min delay between server requests
     private const float ResponseTimeout = 5; // if any server response does not arrive within this time, consider something is broken and it won't happen
+
+    public MarketboardListings()
+    {
+        _requestDataHook = Service.Hook.HookFromAddress<InfoProxyItemSearch.Delegates.RequestData>((nint)_proxy->VirtualTable->RequestData, RequestDataDetour);
+        _requestDataHook.Enable();
+        _processRequestHook = Service.Hook.HookFromAddress<InfoProxyItemSearch.Delegates.ProcessRequestResult>(InfoProxyItemSearch.Addresses.ProcessRequestResult.Value, ProcessRequestResultDetour);
+        _processRequestHook.Enable();
+        _addPageHook = Service.Hook.HookFromAddress<InfoProxyItemSearch.Delegates.AddPage>((nint)_proxy->VirtualTable->AddPage, AddPageDetour);
+        _addPageHook.Enable();
+    }
+
+    public void Dispose()
+    {
+        _addPageHook.Dispose();
+        _processRequestHook.Dispose();
+        _requestDataHook.Dispose();
+    }
+
+    public MarketListings Request(uint itemId)
+    {
+        if (!ExecuteRequest(itemId))
+            throw new Exception($"Failed to send listing request for {itemId}");
+        return _submittedRequests[^1];
+    }
+
+    public bool ExecuteRequest(uint itemId)
+    {
+        _proxy->WaitingForListings = false;
+        _proxy->SearchItemId = itemId;
+        _proxy->Unk_0x24 = 2;
+        _proxy->Unk_0x25 = 9;
+        _proxy->Unk_0x28 = 0;
+        return _proxy->RequestData();
+    }
+
+    private bool RequestDataDetour(InfoProxyItemSearch* self)
+    {
+        if (!_requestDataHook.Original(self))
+            return false; // something went wrong, the request was not sent
+        NextSafeRequest = DateTime.Now.AddSeconds(ResponseTimeout);
+        _submittedRequests.Add(new(self->SearchItemId, Player.GetCurrentWorldId()));
+        _waitingForServerResponse = true;
+        return true;
+    }
+
+    private void ProcessRequestResultDetour(InfoProxyItemSearch* self, byte numItems, uint errorMessageId)
+    {
+        var oriNextSeq = self->NextRequestId;
+        _processRequestHook.Original(self, numItems, errorMessageId);
+        _waitingForServerResponse = self->NextRequestId != oriNextSeq;
+        NextSafeRequest = DateTime.Now.AddSeconds(_waitingForServerResponse ? ResponseTimeout : RateLimit); // prevent sending next request immediately
+
+        if (_waitingForServerResponse != (numItems > 0))
+        {
+            // this can happen if network module is null, but this probably means we're fucked anyway
+            Service.Log.Error($"Assertion failure: ProcessRequestResultDetour got {numItems} items ({errorMessageId} error), proxy sequence change is {oriNextSeq}->{self->NextRequestId}");
+        }
+
+        if (_submittedRequests.Count == 0)
+        {
+            // this can theoretically happen if plugin is enabled between original request and this callback
+            Service.Log.Error($"Assertion failure: unexpected ProcessRequestResultDetour, no requests found");
+            return;
+        }
+
+        if (errorMessageId != 0 && !_waitingForServerResponse)
+        {
+            // we've got an error, and are not expecting any more server communications
+            // try to guess which request this error corresponds to: use second if possible (since errors often arrive before summary for previous successful request)
+            // note that this is a heuristic, and can fail in some cases, for example - we send request 2 just as request 1 completes (it will fail because of rate limiting), and then immediately send request 3
+            // with unlucky timings, we may end up getting error for request 2 when the queue contains requests 2 & 3 (so we'll remove 2 instead), and then 3 will actually succeed (and we'll fill out data for 2 instead)
+            // TODO: think of a better way to handle that
+            var req = _submittedRequests[_submittedRequests.Count > 1 ? 1 : 0];
+            if (req.FetchTime == default)
+            {
+                ReceivedData?.Invoke(req);
+                _submittedRequests.Remove(req);
+            }
+            else
+            {
+                Service.Log.Error($"Assertion failure: selected request that is marked as in-progress to cancel on error ({req.ItemId}, {req.Listings.Count}/{req.ExpectedCount} listings)");
+            }
+            return;
+        }
+
+        // we've got a successful request
+        if (CurrentRequest != null)
+        {
+            Service.Log.Error($"Assertion failure: new successful request while previous was not complete");
+            // not sure what to do here, this shouldn't really happen
+            _submittedRequests.Remove(CurrentRequest);
+            CurrentRequest.FetchTime = default;
+            CurrentRequest.ExpectedCount = 0;
+            CurrentRequest.Listings.Clear();
+            ReceivedData?.Invoke(CurrentRequest);
+            CurrentRequest = null;
+        }
+
+        // assume we're getting data for oldest request
+        CurrentRequest = _submittedRequests[0];
+        CurrentRequest.FetchTime = DateTime.Now;
+        CurrentRequest.ExpectedCount = numItems;
+        ReceivedData?.Invoke(CurrentRequest);
+
+        if (!_waitingForServerResponse)
+        {
+            // the request is finished immediately
+            _submittedRequests.Remove(CurrentRequest);
+            CurrentRequest = null;
+        }
+    }
+
+    private void AddPageDetour(InfoProxyItemSearch* self, nint packet)
+    {
+        var data = (MarketBoardItemListing*)packet;
+        _waitingForServerResponse = data->SequenceIndex == self->CurrentRequestId && data->NextPageIndex != 0;
+        NextSafeRequest = DateTime.Now.AddSeconds(_waitingForServerResponse ? ResponseTimeout : RateLimit); // prevent sending next request immediately
+
+        _addPageHook.Original(self, packet);
+
+        if (data->SequenceIndex != self->CurrentRequestId)
+        {
+            Service.Log.Error($"Assertion failure: expected sequence {self->CurrentRequestId}, got {data->SequenceIndex}, shit's broken...");
+        }
+
+        if (CurrentRequest != null)
+        {
+            var entry = (MarketBoardItemListingEntry*)data->EntriesRaw;
+            for (int i = 0; i < 10; ++i, ++entry)
+            {
+                if (entry->ItemId == 0)
+                    break; // no more entries
+
+                if (entry->ItemId != CurrentRequest.ItemId)
+                {
+
+                }
+
+                CurrentRequest.Listings.Add(new(entry->ListingId, entry->Quantity, entry->UnitPrice, entry->TotalTax, entry->SellingPlayerContentId, entry->SellingRetainerContentId, entry->IsHQ != 0, entry->ContainerId, entry->TownId));
+            }
+
+            if (data->NextPageIndex == 0)
+            {
+                
+            }
+        }
+        else
+        {
+            // this can theoretically happen if plugin is enabled mid request-response sequence
+            Service.Log.Error($"Assertion failure: unexpected AddPageDetour, no current request");
+        }
+
+        if (_requestInProgress != null && !_waitingForServerResponse)
+        {
+            if (data->SequenceIndex != self->CurrentRequestId)
+            {
+                FailRequest($"Unexpected sequence id: expected {self->CurrentRequestId}, got {data->SequenceIndex}"); // no more data will be sent...
+            }
+            else
+            {
+                List<MarketListing> listings = [];
+                var allItemsExpected = true;
+                for (int i = 0; i < self->ListingCount; ++i)
+                {
+                    ref var l = ref self->Listings[i];
+                    allItemsExpected &= l.ItemId == _requestInProgress.ItemId;
+                    listings.Add(new(l.ListingId, l.Quantity, l.UnitPrice, l.TotalTax, l.SellingPlayerContentId, l.SellingRetainerContentId, l.IsHqItem, l.ContainerIndex, l.TownId));
+                }
+
+                if (allItemsExpected)
+                    CompleteRequest(listings);
+                else
+                    FailRequest("Some of the listings have unexpected item id");
+            }
+        }
+    }
+}
+
+public unsafe sealed class Marketboard : IDisposable
+{
     private const int MaxRetries = 3; // max number of times a request can be repeated if response is an error before request is abandoned
 
     private record class RequestState(uint ItemId, CancellationToken Cancel)
@@ -73,7 +289,6 @@ public unsafe sealed class Marketboard : IDisposable
     private DateTime _requestRateLimit; // if current time is less than this value, we disallow sending new requests
     private readonly List<RequestState> _requests = [];
     private RequestState? _requestInProgress;
-    private bool _waitingForServerResponse;
 
     public Marketboard()
     {
@@ -117,7 +332,7 @@ public unsafe sealed class Marketboard : IDisposable
         // TODO: track response...
     }
 
-    private bool ExecuteRequest(uint itemId)
+    public bool ExecuteRequest(uint itemId)
     {
         _proxy->WaitingForListings = false;
         _proxy->SearchItemId = itemId;
