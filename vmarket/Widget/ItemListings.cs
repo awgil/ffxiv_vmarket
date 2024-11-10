@@ -1,5 +1,4 @@
 ﻿using Dalamud.Game.Text;
-using Dalamud.Interface;
 using Dalamud.Interface.Utility.Raii;
 using ImGuiNET;
 using Lumina.Excel.GeneratedSheets2;
@@ -8,13 +7,25 @@ using System.Threading.Tasks;
 namespace Market.Widget;
 
 // list of current listings on marketboard for specific items
-public sealed class ItemListings
+public sealed class ItemListings : IDisposable
 {
+    private Interop.Marketboard _mb;
     private readonly Dictionary<(uint ItemId, uint WorldId), MarketListings> _cache = [];
     private Task? _curRequest;
     private ulong _selectedListing;
 
-    public void Draw(uint itemId, uint worldId, Interop.Marketboard mb, ulong playerCID)
+    public ItemListings(Interop.Marketboard mb)
+    {
+        _mb = mb;
+        _mb.RequestComplete += UpdateCache;
+    }
+
+    public void Dispose()
+    {
+        _mb.RequestComplete -= UpdateCache;
+    }
+
+    public void Draw(uint itemId, uint worldId, ulong playerCID)
     {
         var item = Service.LuminaRow<Item>(itemId);
         if (item == null)
@@ -25,7 +36,7 @@ public sealed class ItemListings
         // TODO: bigger font
         ImGui.TextUnformatted($"{item.Name} @ {Service.LuminaRow<World>(worldId)?.Name}");
 
-        var entry = _cache.GetValueOrDefault((itemId, worldId));
+        var entry = _mb.CurrentRequest != null && _mb.CurrentRequest.ItemId == itemId && _mb.CurrentRequest.WorldId == worldId ? _mb.CurrentRequest : _cache.GetValueOrDefault((itemId, worldId));
         ImGui.AlignTextToFramePadding();
         ImGui.TextUnformatted(entry != null ? $"Data retrieved {DateTime.Now - entry.FetchTime} ago" : "No data available");
         ImGui.SameLine();
@@ -33,17 +44,7 @@ public sealed class ItemListings
         {
             if (ImGui.Button("Refresh"))
             {
-                _curRequest = Service.Framework.Run(async () =>
-                {
-                    try
-                    {
-                        _cache[(itemId, worldId)] = await mb.Request(itemId);
-                    }
-                    catch (Exception ex)
-                    {
-                        Service.Log.Error($"Request failed: {ex}");
-                    }
-                });
+                _curRequest = _mb.RequestAsync(itemId);
             }
         }
 
@@ -84,7 +85,7 @@ public sealed class ItemListings
                             if (ImGui.SmallButton("Buy"))
                             {
                                 // TODO: this is an async op that should remove listing on success
-                                mb.Buy(itemId, l);
+                                _mb.ExecuteBuy(itemId, l);
                             }
                         }
                     }
@@ -92,4 +93,6 @@ public sealed class ItemListings
             }
         }
     }
+
+    private void UpdateCache(MarketListings data) => _cache[(data.ItemId, data.WorldId)] = data;
 }

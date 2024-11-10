@@ -72,7 +72,7 @@ public unsafe class MainWindow : Window, IDisposable
 {
     private readonly Interop.Marketboard _mb = new();
     private readonly Widget.ItemList _itemList = new();
-    private readonly Widget.ItemListings _itemListings = new();
+    private readonly Widget.ItemListings _itemListings;
 
     private Hook<NetworkModuleProxy.Delegates.ProcessPacketEventPlay> _processPacketEventPlayHook;
     private bool _suppressEventPlay;
@@ -80,6 +80,7 @@ public unsafe class MainWindow : Window, IDisposable
 
     public MainWindow() : base("Marketboard")
     {
+        _itemListings = new(_mb);
         _processPacketEventPlayHook = Service.Hook.HookFromAddress<NetworkModuleProxy.Delegates.ProcessPacketEventPlay>(NetworkModuleProxy.Addresses.ProcessPacketEventPlay.Value, ProcessPacketEventPlayDetour);
         _processPacketEventPlayHook.Enable();
     }
@@ -87,6 +88,7 @@ public unsafe class MainWindow : Window, IDisposable
     public void Dispose()
     {
         _processPacketEventPlayHook.Dispose();
+        _itemListings.Dispose();
         _mb.Dispose();
     }
 
@@ -115,7 +117,7 @@ public unsafe class MainWindow : Window, IDisposable
                     var player = (Character*)GameObjectManager.Instance()->Objects.IndexSorted[0].Value;
                     if (_itemList.SelectedItem != 0 && player != null)
                     {
-                        _itemListings.Draw(_itemList.SelectedItem, player->CurrentWorld, _mb, player->ContentId);
+                        _itemListings.Draw(_itemList.SelectedItem, player->CurrentWorld, player->ContentId);
                     }
                 }
             }
