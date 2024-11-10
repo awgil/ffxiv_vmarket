@@ -18,11 +18,13 @@ public sealed class ItemListings : IDisposable
     {
         _mb = mb;
         _mb.RequestComplete += UpdateCache;
+        _mb.PurchaseComplete += RemoveListing;
     }
 
     public void Dispose()
     {
         _mb.RequestComplete -= UpdateCache;
+        _mb.PurchaseComplete -= RemoveListing;
     }
 
     public void Draw(uint itemId, uint worldId, ulong playerCID)
@@ -84,7 +86,7 @@ public sealed class ItemListings : IDisposable
                         {
                             if (ImGui.SmallButton("Buy"))
                             {
-                                // TODO: this is an async op that should remove listing on success
+                                // TODO: track completion...
                                 _mb.ExecuteBuy(itemId, l);
                             }
                         }
@@ -95,4 +97,5 @@ public sealed class ItemListings : IDisposable
     }
 
     private void UpdateCache(MarketListings data) => _cache[(data.ItemId, data.WorldId)] = data;
+    private void RemoveListing(uint itemId, ulong listingId) => _cache.GetValueOrDefault((itemId, Interop.Player.GetCurrentWorldId()))?.Listings.RemoveAll(l => l.Id == listingId);
 }

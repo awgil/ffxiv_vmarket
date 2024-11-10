@@ -87,7 +87,7 @@ public unsafe struct MarketBoardItemListingHistory
 // it uses existing code in InfoProxyItemSearch to drive the request-response sequence, hooks its functions and emits events when new data is available
 // it also stores the received data internally, which is not affected by interruptions like proxy's built-in list is
 // it does not provide any rate limiting, and does not notify about failed requests (since error response does not identify which request failed)
-// TODO: track buying
+// TODO: BuyAsync
 public sealed class Marketboard : IDisposable
 {
     public DateTime NextSafeRequest { get; private set; } // minimal time when we expect new request to succeed
@@ -96,6 +96,7 @@ public sealed class Marketboard : IDisposable
     public bool IsRequestLikelyToSucceed => DateTime.Now >= NextSafeRequest;
 
     public event Action<MarketListings>? RequestComplete; // event emitted when request fully completes
+    public event Action<uint, ulong>? PurchaseComplete; // event emitted when purchase completes successfully
 
     private unsafe InfoProxyItemSearch* _proxy = (InfoProxyItemSearch*)InfoModule.Instance()->InfoProxies[(int)InfoProxyId.ItemSearch].Value;
     private Hook<InfoProxyItemSearch.Delegates.ProcessRequestResult> _processRequestHook;
@@ -254,6 +255,10 @@ public sealed class Marketboard : IDisposable
 
     private unsafe void ProcessPurchaseDetour(InfoProxyItemSearch* self, uint itemId, uint errorMessageId)
     {
+        if (errorMessageId == 0 && itemId == self->LastPurchasedMarketboardItem.ItemId)
+        {
+            PurchaseComplete?.Invoke(itemId, self->LastPurchasedMarketboardItem.ListingId);
+        }
         _processPurchaseHook.Original(self, itemId, errorMessageId);
     }
 
