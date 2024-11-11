@@ -1,12 +1,8 @@
-﻿using Dalamud.Hooking;
-using Dalamud.Interface.Utility.Raii;
+﻿using Dalamud.Interface.Utility.Raii;
 using Dalamud.Interface.Windowing;
 using FFXIVClientStructs.FFXIV.Client.Game;
 using FFXIVClientStructs.FFXIV.Client.Game.Character;
 using FFXIVClientStructs.FFXIV.Client.Game.Object;
-using FFXIVClientStructs.FFXIV.Client.Game.UI;
-using FFXIVClientStructs.FFXIV.Client.Network;
-using FFXIVClientStructs.FFXIV.Client.System.Framework;
 using FFXIVClientStructs.FFXIV.Client.System.String;
 using FFXIVClientStructs.FFXIV.Client.UI.Agent;
 using FFXIVClientStructs.FFXIV.Client.UI.Info;
@@ -32,64 +28,25 @@ public unsafe struct RequestInteract
     [FieldOffset(0x28)] public uint EventHandlerId;
 }
 
-// retainer flow
-// 1. click on bell
-// 1.a. ClientIPC 0x15B + 0x7F + ExecuteCommand 3 (??? some generic interaction stuff), set cond OccupiedSummoningBell
-// 1.b. ServerIPC ActorControl-ToggleWeapon + EventStart + PlayerStateFlags + EventPlay(handler=0x000B0220, scene=0, args=[])
-// 1.c. lua CmnDefRetainerBell.OnScene00000 -> RetainerEventHandler::RequestRetainerList -> ServerCallback Request 2 -> ClientIPC ExecuteCommand 9003/listener-id/2/0/0, lua yields
-// 1.d. ServerIPC RetainerInformation x10 + RetainerSummary -> RetainerManager::onRetainerInformation -> lua resume
-// 1.e. lua -> RetainerEventHandler::WaitForRetainerTaskLoaded -> yield/resume...
-// 1.f. lua -> RetainerEventHandler::LoadRetainerTaskData -> yield/resume...
-// 1.g. lua OnScene_CallRetainer -> RetainerEventHandler::OpenRetainerList -> AgentRetainerList::open -> yield (shows menu)
-// 2. click exit
-// 2.a. -> hide -> proxy.exec(0, 0, 0)
-// 2.b. lua return -> ClientIPC EventData2(....)
-// 2.c. ServerIPC EventFinish + PlayerStateFlags
-// 3. click retainer
-// 3.a. ReceiveEvent kind=0, p0=2 -> proxy.exec(1, idHi, idLo) -> lua resume (1, idHi, idLo, retainer->isAvailable)
-// 3.b. lua -> RetainerEventHandler::SetCurrentRetainerId(idHi, idLo) -> OnScene00000 returns [idHi, idLo]
-// 3.c. lua return -> ClientIPC EventData2([RetainerEventHandler::id==]0x000B0220.0, p2=0, nargs=2, args=idHi idLo)
-// 3.d. ServerIPC 375 -> set some agent update flag
-// 3.e. ServerIPC RetainerState -> show no longer selling message, + a whole bunch of ItemInfo/ContainerInfo/CurrencyCrystalInfo/ItemMarketBoardInfo/ItemMarketBoardSummary/375/ACS/EventPlay/MapUpdate packets
-// 3.f. ServerIPC EventPlay(handler=0x000B0220, scene=2, args=[retainerEntityId, x, pixieENPCId, x])
-// 3.g. lua CmnDefRetainerBell.OnScene00002 -> RetainerEventHandler::SetCurrentRetainerEntityId, BindRetainer, pixie setup etc
-// 3.h. lua RetainerEventHandler::SelectRetainerMenu -> ServerCallback Request 4 -> ClientIPC ExecuteCommand 9003/listener-id/4/0/0, lua yields
-// 3.i. ServerIPC ACS Response 4 [0,0,0,0] -> show retainer menu
-// 4. click market
-// 4.a. ??? -> lua resume (RETAINER_MENU_MARKET_1)
-// 4.b. lua -> RetainerEventHandler::OpenMarketFromPlayer -> AgentRetainer::open -> yield
-// 4.c. ??? (list/delist/adjust price)
-// 5. exit market
-// 5.a. ??? -> lua resume -> go back to RetainerEventHandler::SelectRetainerMenu (3.h)
-// 6. click exit
-// 6.a. ??? -> lua resume -> function cleans up -> OnScene00002 returns []
-// 6.b. lua return -> ClientIPC EventData2(0x000B0220.2, p2=0, nargs=0)
-// 6.c. ServerIPC 375 + RetainerState (-> show selling message) + EventPlay(0x000B0220, scene=1, args=[idHi idLo])
-// 6.d. lua CmnDefRetainerBell.OnScene00001 -> RetainerEventHandler::RequestRetainerSingleData -> ServerCallback Request 3 -> ClientIPC ExecuteCommand 9003/listener-id/3/lo/hi, lua yields
-// 6.e. ServerIPC DespawnCharacter + RetainerInformation + RtainerSummary -> RetainerManager::onRetainerInformation -> lua resume
-// 6.f. lua OnScene_CallRetainer -> ... (1.g)
 public unsafe class MainWindow : Window, IDisposable
 {
     private readonly Interop.MBFetch _mbFetch = new();
     private readonly Interop.MBPurchase _mbPurchase = new();
+    private readonly Interop.RetainerBell _rb = new();
     private readonly Widget.ItemList _itemList = new();
     private readonly Widget.ItemListings _itemListings;
 
-    private Hook<NetworkModuleProxy.Delegates.ProcessPacketEventPlay> _processPacketEventPlayHook;
-    private bool _suppressEventPlay;
-    private ushort _curEventStage;
+    private System.Threading.Tasks.Task? _updateTask;
 
     public MainWindow() : base("Marketboard")
     {
         _itemListings = new(_mbFetch, _mbPurchase);
-        _processPacketEventPlayHook = Service.Hook.HookFromAddress<NetworkModuleProxy.Delegates.ProcessPacketEventPlay>(NetworkModuleProxy.Addresses.ProcessPacketEventPlay.Value, ProcessPacketEventPlayDetour);
-        _processPacketEventPlayHook.Enable();
     }
 
     public void Dispose()
     {
-        _processPacketEventPlayHook.Dispose();
         _itemListings.Dispose();
+        _rb.Dispose();
         _mbPurchase.Dispose();
         _mbFetch.Dispose();
     }
@@ -144,7 +101,7 @@ public unsafe class MainWindow : Window, IDisposable
 
     private void DrawDebug()
     {
-        ImGui.Checkbox($"Suppress EventPlay packet delivery (stage={_curEventStage})###suppress", ref _suppressEventPlay);
+        ImGui.TextUnformatted(_rb.ToString());
 
         var infoProxy = (InfoProxyItemSearch*)InfoModule.Instance()->InfoProxies[(int)InfoProxyId.ItemSearch].Value;
         if (ImGui.Button("Search..."))
@@ -161,6 +118,16 @@ public unsafe class MainWindow : Window, IDisposable
 
         ImGui.SameLine();
 
+        using (ImRaii.Disabled(_updateTask != null && !_updateTask.IsCompleted))
+        {
+            if (ImGui.Button("Update retainers..."))
+            {
+                _updateTask = _rb.Update();
+            }
+        }
+
+        ImGui.SameLine();
+
         var rm = RetainerManager.Instance();
         var invmgr = InventoryManager.Instance();
         if (ImGui.Button($"Request retainer info {rm->Ready}##req_ret_info"))
@@ -170,33 +137,33 @@ public unsafe class MainWindow : Window, IDisposable
 
         ImGui.SameLine();
 
-        if (ImGui.Button("Open retainer list"))
-        {
-            OpenRetainerList();
-        }
+        //if (ImGui.Button("Open retainer list"))
+        //{
+        //    OpenRetainerList();
+        //}
 
-        ImGui.SameLine();
+        //ImGui.SameLine();
 
-        if (ImGui.Button($"Open retainer 0 {rm->Retainers[0].NameString}###open_ret0"))
-        {
-            OpenRetainer(rm->Retainers[0].RetainerId);
-        }
+        //if (ImGui.Button($"Open retainer 0 {rm->Retainers[0].NameString}###open_ret0"))
+        //{
+        //    OpenRetainer(rm->Retainers[0].RetainerId);
+        //}
 
-        ImGui.SameLine();
+        //ImGui.SameLine();
 
-        if (ImGui.Button($"Close retainer"))
-        {
-            CloseRetainer();
-        }
+        //if (ImGui.Button($"Close retainer"))
+        //{
+        //    CloseRetainer();
+        //}
 
-        ImGui.SameLine();
+        //ImGui.SameLine();
 
-        if (ImGui.Button("Close retainer list"))
-        {
-            CloseRetainerList();
-        }
+        //if (ImGui.Button("Close retainer list"))
+        //{
+        //    CloseRetainerList();
+        //}
 
-        ImGui.SameLine();
+        //ImGui.SameLine();
 
         if (ImGui.Button("List honey"))
         {
@@ -220,6 +187,24 @@ public unsafe class MainWindow : Window, IDisposable
                     }
                     ImGui.SameLine();
                     ImGui.TextUnformatted($"[{i}] {l.ListingId:X}: {l.Quantity}x {l.ItemId} '{Service.LuminaRow<Item>(l.ItemId)?.Name}'{(l.IsHqItem ? " (hq)" : "")} @ {l.UnitPrice} + {l.TotalTax}");
+                }
+            }
+        }
+
+        using (var n = ImRaii.TreeNode($"Retainer cache: {_rb.Retainers.Count} retainers, dirty={_rb.StateDirty}, updating={_rb.UpdateInProgress}###retainer_cache"))
+        {
+            if (n)
+            {
+                foreach (var r in _rb.Retainers)
+                {
+                    using var nr = ImRaii.TreeNode($"Retainer {r.Id:X} '{r.Name}': {r.Listings.Count} listings###ret{r.Id:X}");
+                    if (!nr)
+                        continue;
+
+                    foreach (var i in r.Listings)
+                    {
+                        using var nl = ImRaii.TreeNode($"[{i.Slot}]: selling {i.Quantity}x {i.ItemId} @ {i.UnitPrice}");
+                    }
                 }
             }
         }
@@ -264,7 +249,7 @@ public unsafe class MainWindow : Window, IDisposable
                         invmgr->ModifyRetainerMarketPrice(i, (uint)invmgr->RetainerMarketUnitPrice[i] + 1);
                     ImGui.SameLine();
                     if (ImGui.Button("Delist"))
-                        invmgr->MoveFromRetainerMarketToPlayerInventory(InventoryType.RetainerMarket, i, item.Quantity);
+                        invmgr->MoveFromRetainerMarketToPlayerInventory(InventoryType.RetainerMarket, i, (uint)item.Quantity);
                     ImGui.SameLine();
                     ImGui.TextUnformatted($"[{i}] {item.Quantity}x {item.ItemId} '{Service.LuminaRow<Item>(item.ItemId)?.Name}' @ {invmgr->RetainerMarketUnitPrice[i]} u={invmgr->RetainerMarketF18[i]}");
                 }
@@ -280,6 +265,17 @@ public unsafe class MainWindow : Window, IDisposable
                 {
                     ImGui.TextUnformatted($"[{i}] {*(Utf8String*)(agentItems + 8)} q={*(int*)(agentItems + 0x70)} {*(Utf8String*)(agentItems + 0x78)} {*(Utf8String*)(agentItems + 0xE0)} slot={*(ushort*)(agentItems + 0x148)}");
                     agentItems += 0x168;
+                }
+            }
+        }
+
+        using (var n = ImRaii.TreeNode("Bells"))
+        {
+            if (n)
+            {
+                foreach (var obj in Interop.RetainerBell.SummoningBells())
+                {
+                    using var bn = ImRaii.TreeNode($"[{obj.Value->ObjectIndex}] {(ulong)obj.Value->GetGameObjectId():X} '{obj.Value->NameString}' @ {obj.Value->Position}, d={Interop.Player.DistanceToHitbox(obj.Value)}, interact={Interop.Player.CanInteract(obj)}");
                 }
             }
         }
@@ -304,39 +300,5 @@ public unsafe class MainWindow : Window, IDisposable
             if (cont->Items[i].ItemId == itemId)
                 return i;
         return -1;
-    }
-
-    private void OpenRetainerList()
-    {
-        RequestInteract req = new();
-        req.Header.Opcode = 0x15B; // see Client::Game::Event::EventFramework::interactWithSpecificHandler
-        req.Header.PayloadSize = 0x20;
-        req.TargetObjectId = /*0x1001FA50B;*/0x1004431D6; // object id of summoning bell
-        req.EventHandlerId = 0xB0220; // B = CustomTalk
-        Framework.Instance()->NetworkModuleProxy->SendPacket2(&req, 0, 0);
-    }
-
-    private void CloseRetainerList()
-    {
-        NetworkModuleProxy.SendEventDataPacket(0xB0220, _curEventStage, 0, null, 0, null);
-    }
-
-    private void OpenRetainer(ulong retainerId)
-    {
-        Span<uint> args = [(uint)(retainerId >> 32), (uint)retainerId];
-        NetworkModuleProxy.SendEventDataPacket(0xB0220, _curEventStage, 0, args.GetPointer(0), 2, null);
-    }
-
-    private void CloseRetainer()
-    {
-        NetworkModuleProxy.SendEventDataPacket(0xB0220, _curEventStage, 0, null, 0, null);
-    }
-
-    private void ProcessPacketEventPlayDetour(ulong objectId, uint eventId, ushort state, ulong a4, uint* payload, byte payloadSize)
-    {
-        if (!_suppressEventPlay)
-            _processPacketEventPlayHook.Original(objectId, eventId, state, a4, payload, payloadSize);
-        if (eventId == 0xB0220)
-            _curEventStage = state;
     }
 }
