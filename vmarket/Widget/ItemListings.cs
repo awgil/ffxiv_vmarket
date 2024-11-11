@@ -9,22 +9,24 @@ namespace Market.Widget;
 // list of current listings on marketboard for specific items
 public sealed class ItemListings : IDisposable
 {
-    private Interop.Marketboard _mb;
+    private Interop.MBFetch _mbFetch;
+    private Interop.MBPurchase _mbPurchase;
     private readonly Dictionary<(uint ItemId, uint WorldId), MarketListings> _cache = [];
     private Task? _curRequest;
     private ulong _selectedListing;
 
-    public ItemListings(Interop.Marketboard mb)
+    public ItemListings(Interop.MBFetch mbFetch, Interop.MBPurchase mbPurchase)
     {
-        _mb = mb;
-        _mb.RequestComplete += UpdateCache;
-        _mb.PurchaseComplete += RemoveListing;
+        _mbFetch = mbFetch;
+        _mbPurchase = mbPurchase;
+        _mbFetch.RequestComplete += UpdateCache;
+        _mbPurchase.PurchaseComplete += RemoveListing;
     }
 
     public void Dispose()
     {
-        _mb.RequestComplete -= UpdateCache;
-        _mb.PurchaseComplete -= RemoveListing;
+        _mbFetch.RequestComplete -= UpdateCache;
+        _mbPurchase.PurchaseComplete -= RemoveListing;
     }
 
     public void Draw(uint itemId, uint worldId, ulong playerCID)
@@ -38,7 +40,7 @@ public sealed class ItemListings : IDisposable
         // TODO: bigger font
         ImGui.TextUnformatted($"{item.Name} @ {Service.LuminaRow<World>(worldId)?.Name}");
 
-        var entry = _mb.CurrentRequest != null && _mb.CurrentRequest.ItemId == itemId && _mb.CurrentRequest.WorldId == worldId ? _mb.CurrentRequest : _cache.GetValueOrDefault((itemId, worldId));
+        var entry = _mbFetch.CurrentRequest != null && _mbFetch.CurrentRequest.ItemId == itemId && _mbFetch.CurrentRequest.WorldId == worldId ? _mbFetch.CurrentRequest : _cache.GetValueOrDefault((itemId, worldId));
         ImGui.AlignTextToFramePadding();
         ImGui.TextUnformatted(entry != null ? $"Data retrieved {DateTime.Now - entry.FetchTime} ago" : "No data available");
         ImGui.SameLine();
@@ -46,7 +48,7 @@ public sealed class ItemListings : IDisposable
         {
             if (ImGui.Button("Refresh"))
             {
-                _curRequest = _mb.RequestAsync(itemId);
+                _curRequest = _mbFetch.RequestAsync(itemId);
             }
         }
 
@@ -87,7 +89,7 @@ public sealed class ItemListings : IDisposable
                             if (ImGui.SmallButton("Buy"))
                             {
                                 // TODO: track completion...
-                                _mb.ExecuteBuy(itemId, l);
+                                _mbPurchase.ExecuteBuy(itemId, l);
                             }
                         }
                     }

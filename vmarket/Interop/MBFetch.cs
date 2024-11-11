@@ -83,12 +83,11 @@ public unsafe struct MarketBoardItemListingHistory
 // -- if two 'request item listings' ipc are sent one after another, the error response for the subsequent one can arrive before the normal success response for the first request
 // TODO: reverse meaning of request params
 
-// utility for fetching marketboard listings and buying items
+// utility for fetching marketboard listings
 // it uses existing code in InfoProxyItemSearch to drive the request-response sequence, hooks its functions and emits events when new data is available
 // it also stores the received data internally, which is not affected by interruptions like proxy's built-in list is
 // it does not provide any rate limiting, and does not notify about failed requests (since error response does not identify which request failed)
-// TODO: BuyAsync
-public sealed class Marketboard : IDisposable
+public sealed class MBFetch : IDisposable
 {
     public DateTime NextSafeRequest { get; private set; } // minimal time when we expect new request to succeed
     public MarketListings? CurrentRequest { get; private set; } // if non null, this is the request that is being filled with ongoing request-response sequence
@@ -96,20 +95,18 @@ public sealed class Marketboard : IDisposable
     public bool IsRequestLikelyToSucceed => DateTime.Now >= NextSafeRequest;
 
     public event Action<MarketListings>? RequestComplete; // event emitted when request fully completes
-    public event Action<uint, ulong>? PurchaseComplete; // event emitted when purchase completes successfully
 
     private unsafe InfoProxyItemSearch* _proxy = (InfoProxyItemSearch*)InfoModule.Instance()->InfoProxies[(int)InfoProxyId.ItemSearch].Value;
     private Hook<InfoProxyItemSearch.Delegates.ProcessRequestResult> _processRequestHook;
     private Hook<InfoProxyItemSearch.Delegates.ProcessItemHistory> _processHistoryHook;
     private Hook<InfoProxyItemSearch.Delegates.AddPage> _addPageHook;
-    private Hook<InfoProxyItemSearch.Delegates.ProcessPurchaseResponse> _processPurchaseHook;
     private int _numExpectedListings = -1; // < 0 if there is no request-response sequence in progress
 
     private const float RateLimit = 1;
     private const float RequestTimeout = 10;
     private const int MaxRetries = 3; // max number of times a request can be repeated if response is an error before request is abandoned
 
-    public unsafe Marketboard()
+    public unsafe MBFetch()
     {
         _processRequestHook = Service.Hook.HookFromAddress<InfoProxyItemSearch.Delegates.ProcessRequestResult>(InfoProxyItemSearch.Addresses.ProcessRequestResult.Value, ProcessRequestDetour);
         _processRequestHook.Enable();
@@ -117,13 +114,10 @@ public sealed class Marketboard : IDisposable
         _processHistoryHook.Enable();
         _addPageHook = Service.Hook.HookFromAddress<InfoProxyItemSearch.Delegates.AddPage>((nint)_proxy->VirtualTable->AddPage, AddPageDetour);
         _addPageHook.Enable();
-        _processPurchaseHook = Service.Hook.HookFromAddress<InfoProxyItemSearch.Delegates.ProcessPurchaseResponse>(InfoProxyItemSearch.Addresses.ProcessPurchaseResponse.Value, ProcessPurchaseDetour);
-        //_processPurchaseHook.Enable();
     }
 
     public void Dispose()
     {
-        _processPurchaseHook.Dispose();
         _addPageHook.Dispose();
         _processHistoryHook.Dispose();
         _processRequestHook.Dispose();
@@ -139,20 +133,6 @@ public sealed class Marketboard : IDisposable
         return _proxy->RequestData();
     }
 
-    public unsafe bool ExecuteBuy(uint itemId, in MarketListing listing)
-    {
-        _proxy->LastPurchasedMarketboardItem.SellingRetainerContentId = listing.RetainerCID;
-        _proxy->LastPurchasedMarketboardItem.ListingId = listing.Id;
-        _proxy->LastPurchasedMarketboardItem.ItemId = itemId;
-        _proxy->LastPurchasedMarketboardItem.Quantity = listing.Qty;
-        _proxy->LastPurchasedMarketboardItem.UnitPrice = listing.UnitPrice;
-        _proxy->LastPurchasedMarketboardItem.TotalTax = listing.TotalTax;
-        _proxy->LastPurchasedMarketboardItem.ContainerIndex = listing.ContainerIndex;
-        _proxy->LastPurchasedMarketboardItem.IsHqItem = listing.IsHQ;
-        _proxy->LastPurchasedMarketboardItem.TownId = listing.TownId;
-        return _proxy->SendPurchaseRequestPacket();
-    }
-
     public async Task<MarketListings> RequestAsync(uint itemId, CancellationToken cancel = default)
     {
         for (int i = 0; i < MaxRetries; ++i)
@@ -165,8 +145,13 @@ public sealed class Marketboard : IDisposable
                 throw new Exception("Failed to execute request"); // this should not really happen, unless network module is shut down
 
             var tcs = new TaskCompletionSource<MarketListings>();
-            RequestComplete += tcs.SetResult;
-            using var unregister = new RAII(() => RequestComplete -= tcs.SetResult);
+            void completionHandler(MarketListings result)
+            {
+                if (result.ItemId == itemId)
+                    tcs.SetResult(result);
+            }
+            RequestComplete += completionHandler;
+            using var unregister = new RAII(() => RequestComplete -= completionHandler);
 
             try
             {
@@ -251,15 +236,6 @@ public sealed class Marketboard : IDisposable
             CurrentRequest = null;
             _numExpectedListings = -1;
         }
-    }
-
-    private unsafe void ProcessPurchaseDetour(InfoProxyItemSearch* self, uint itemId, uint errorMessageId)
-    {
-        if (errorMessageId == 0 && itemId == self->LastPurchasedMarketboardItem.ItemId)
-        {
-            PurchaseComplete?.Invoke(itemId, self->LastPurchasedMarketboardItem.ListingId);
-        }
-        _processPurchaseHook.Original(self, itemId, errorMessageId);
     }
 
     private static bool LogAssert(bool condition, string message)
