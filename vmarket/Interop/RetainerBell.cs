@@ -80,7 +80,7 @@ public sealed class RetainerBell : IDisposable
     {
         if (UpdateInProgress)
             throw new Exception("Another update operation is in progress");
-        if (Service.Conditions[ConditionFlag.OccupiedSummoningBell])
+        if (InteractingWithSummoningBell())
             throw new Exception("Already interacting with summoning bell");
 
         var bell = FindClosestSummoningBell();
@@ -91,7 +91,7 @@ public sealed class RetainerBell : IDisposable
         using var raiiFlag = new RAII(() => UpdateInProgress = false);
 
         Player.Interact(bell);
-        if (!Service.Conditions[ConditionFlag.OccupiedSummoningBell])
+        if (!InteractingWithSummoningBell())
             throw new Exception("Failed to interact with summoning bell");
         await WaitForEventPlay();
 
@@ -116,13 +116,14 @@ public sealed class RetainerBell : IDisposable
 
         // close retainer list
         CloseRetainerList();
-        await WaitWhile(() => Service.Conditions[ConditionFlag.OccupiedSummoningBell]);
+        await WaitWhile(InteractingWithSummoningBell);
     }
 
     public override string ToString() => $"State: {(UpdateInProgress ? "in progress" : "idle")}, event stage: {_curEventStage}";
 
     public static IEnumerable<Pointer<GameObject>> SummoningBells() => Player.EventObjects(0xB0220);
     public static Pointer<GameObject> FindClosestSummoningBell() => Player.ClosestEventObject(0xB0220);
+    public static bool InteractingWithSummoningBell() => Service.Conditions[ConditionFlag.OccupiedSummoningBell];
 
     private unsafe static void RequestRetainerListUpdate() => RetainerManager.Instance()->RequestVenturesTimers();
     private unsafe static bool RetainerUpdateInProgress() => RetainerManager.Instance()->Ready == 0;
@@ -167,7 +168,6 @@ public sealed class RetainerBell : IDisposable
     {
         _transition = new();
         await _transition.Task;
-        _transition = null;
         await Service.Framework.DelayTicks(1); // don't execute stuff until we fully finish event processing
     }
 
