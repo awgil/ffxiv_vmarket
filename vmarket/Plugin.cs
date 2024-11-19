@@ -12,6 +12,7 @@ public sealed class Plugin : IDalamudPlugin
     private WindowSystem WindowSystem = new("vmarket");
     private MainWindow _wndMain;
     private ICommandManager _cmd;
+    private ContextMenu _ctx;
 
     public Plugin(IDalamudPluginInterface dalamud, ISigScanner sigScanner, ICommandManager commandManager)
     {
@@ -37,10 +38,14 @@ public sealed class Plugin : IDalamudPlugin
 
         dalamud.UiBuilder.Draw += WindowSystem.Draw;
         dalamud.UiBuilder.OpenConfigUi += () => _wndMain.IsOpen = true;
+
+        _ctx = new(_wndMain);
+        Service.ContextMenu.OnMenuOpened += _ctx.MenuOpened;
     }
 
     public void Dispose()
     {
+        Service.ContextMenu.OnMenuOpened -= _ctx.MenuOpened;
         _cmd.RemoveHandler("/vmarket");
         WindowSystem.RemoveAllWindows();
         _wndMain.Dispose();

@@ -1,0 +1,13 @@
+MB tab
+	- filters (a la item search plugin)
+		- patch filter
+	- colour items based on being in favourites/history and show filter type as an icon next to names
+Retainers tab
+	- inventory view, ability to manipulate and list from there
+Listings tab
+
+misc features
+	- turret mode: keep all listings for current character up to date by periodically checking local listings
+	- autoretainer mode: OnPostVenture update any listings (auto add retainer listings to a ToCache list)
+	- contextmenu to view items on the mb or list them for sale
+	- price watch list/auto buy
