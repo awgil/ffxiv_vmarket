@@ -95,7 +95,7 @@ public sealed class ItemList
             foreach (var filter in _filters.Where(x => !x.ShowName))
             {
                 filter.Draw();
-                // TODO: how on earth am I going to sameline these ...
+                ImGui.SameLine();
             }
         }
         ImGui.Columns(2);

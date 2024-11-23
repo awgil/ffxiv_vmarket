@@ -52,11 +52,6 @@ internal class NameFilter : Filter
 
     public override void Draw()
     {
-        ImGui.SetNextItemWidth(-20 * ImGui.GetIO().FontGlobalScale);
-        if (ImGui.IsWindowAppearing())
-            ImGui.SetKeyboardFocusHere();
-        ImGui.InputText("##ItemNameSearchFilter", ref searchText, 256);
-        ImGui.SameLine();
         ImGui.TextDisabled("(?)");
         if (ImGui.IsItemHovered())
         {
@@ -77,6 +72,11 @@ internal class NameFilter : Filter
                 ImGui.TextDisabled("\"/^.M.$/\"");
             }
         }
+        ImGui.SameLine();
+        if (ImGui.IsWindowAppearing()) ImGui.SetKeyboardFocusHere();
+        var spaceForButton = ImGui.GetStyle().ItemSpacing.X + 32 * ImGui.GetIO().FontGlobalScale;
+        ImGui.SetNextItemWidth(-2 * spaceForButton);
+        ImGui.InputText("##ItemNameSearchFilter", ref searchText, 256);
     }
 
     private void ParseInputText()
