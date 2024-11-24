@@ -5,10 +5,12 @@ using Dalamud.Interface.Utility.Raii;
 using ImGuiNET;
 using System.Threading.Tasks;
 using Lumina.Excel.Sheets;
+using Dalamud.Interface.Utility;
 
 namespace Market.Widget;
 
 // list of current listings on marketboard for specific items
+#pragma warning disable SeStringRenderer
 public sealed class ItemListings : IDisposable
 {
     private Interop.MBFetch _mbFetch;
@@ -39,8 +41,12 @@ public sealed class ItemListings : IDisposable
 
         ImGui.Image(Service.TextureProvider.GetFromGameIcon((uint)item.Value.Icon).GetWrapOrEmpty().ImGuiHandle, new(40));
         ImGui.SameLine();
-        // TODO: bigger font
-        ImGui.TextWrapped($"{item.Value.Name} @ {Service.LuminaRow<World>(worldId)?.Name}\n{item.Value.Description}");
+        using (var _ = ImRaii.Group())
+        {
+            // TODO: bigger font
+            ImGui.TextUnformatted($"{item.Value.Name} @ {Service.LuminaRow<World>(worldId)?.Name}");
+            ImGuiHelpers.SeStringWrapped(item.Value.Description);
+        }
         if (ImGui.IsItemClicked())
         {
             var payloadList = new List<Payload> {
