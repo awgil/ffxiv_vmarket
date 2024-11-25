@@ -137,6 +137,7 @@ public sealed class ItemList
         using var style = ImRaii.PushIndent(0.5f);
         foreach (var id in _curFilteredItems)
         {
+            // TODO: print item link if double clicked
             if (ImGui.Selectable(_items[id], SelectedItem == id))
             {
                 SelectedItem = id;

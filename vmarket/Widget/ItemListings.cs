@@ -47,23 +47,7 @@ public sealed class ItemListings : IDisposable
             ImGui.TextUnformatted($"{item.Value.Name} @ {Service.LuminaRow<World>(worldId)?.Name}");
             ImGuiHelpers.SeStringWrapped(item.Value.Description);
         }
-        if (ImGui.IsItemClicked())
-        {
-            var payloadList = new List<Payload> {
-                new UIForegroundPayload((ushort) (0x223 + item.Value.Rarity * 2)),
-                new UIGlowPayload((ushort) (0x224 + item.Value.Rarity * 2)),
-                new ItemPayload(item.Value.RowId, item.Value.CanBeHq && Service.KeyState[0x11]),
-                new UIForegroundPayload(500),
-                new UIGlowPayload(501),
-                new TextPayload($"{(char) SeIconChar.LinkMarker}"),
-                new UIForegroundPayload(0),
-                new UIGlowPayload(0),
-                new TextPayload(item.Value.Name.ExtractText() + (item.Value.CanBeHq && Service.KeyState[0x11] ? $" {(char)SeIconChar.HighQuality}" : "")),
-                new RawPayload([0x02, 0x27, 0x07, 0xCF, 0x01, 0x01, 0x01, 0xFF, 0x01, 0x03]),
-                new RawPayload([0x02, 0x13, 0x02, 0xEC, 0x03])
-            };
-            Service.Chat.Print(new XivChatEntry() { Message = new SeString(payloadList) });
-        }
+        if (ImGui.IsItemClicked()) Utils.MakeItemLink(item.Value);
 
         var entry = _mbFetch.CurrentRequest != null && _mbFetch.CurrentRequest.ItemId == itemId && _mbFetch.CurrentRequest.WorldId == worldId ? _mbFetch.CurrentRequest : _cache.GetValueOrDefault((itemId, worldId));
         ImGui.AlignTextToFramePadding();
