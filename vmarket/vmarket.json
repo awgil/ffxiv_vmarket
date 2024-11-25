@@ -4,5 +4,6 @@
   "Punchline": "Market board automation.",
   "Description": "Make market board interactions less annoying.",
   "InternalName": "vmarket",
-  "ApplicableVersion": "any"
+  "ApplicableVersion": "any",
+  "DalamudApiLevel": 11
 }

@@ -8,7 +8,7 @@ using FFXIVClientStructs.FFXIV.Client.UI.Agent;
 using FFXIVClientStructs.FFXIV.Client.UI.Info;
 using FFXIVClientStructs.Interop;
 using ImGuiNET;
-using Lumina.Excel.GeneratedSheets;
+using Lumina.Excel.Sheets;
 using System.Runtime.InteropServices;
 
 namespace Market;
@@ -49,6 +49,13 @@ public unsafe class MainWindow : Window, IDisposable
         _rb.Dispose();
         _mbPurchase.Dispose();
         _mbFetch.Dispose();
+    }
+
+    public void OpenWindowToItem(uint itemId)
+    {
+        IsOpen = true;
+        _itemList.SelectedItem = itemId;
+        _mbFetch.RequestAsync(itemId);
     }
 
     public override void Draw()

@@ -1,12 +1,16 @@
 ﻿using Dalamud.Game.Text;
+using Dalamud.Game.Text.SeStringHandling.Payloads;
+using Dalamud.Game.Text.SeStringHandling;
 using Dalamud.Interface.Utility.Raii;
 using ImGuiNET;
-using Lumina.Excel.GeneratedSheets2;
 using System.Threading.Tasks;
+using Lumina.Excel.Sheets;
+using Dalamud.Interface.Utility;
 
 namespace Market.Widget;
 
 // list of current listings on marketboard for specific items
+#pragma warning disable SeStringRenderer
 public sealed class ItemListings : IDisposable
 {
     private Interop.MBFetch _mbFetch;
@@ -35,10 +39,15 @@ public sealed class ItemListings : IDisposable
         if (item == null)
             return;
 
-        ImGui.Image(Service.TextureProvider.GetFromGameIcon((uint)item.Icon).GetWrapOrEmpty().ImGuiHandle, new(40));
+        ImGui.Image(Service.TextureProvider.GetFromGameIcon((uint)item.Value.Icon).GetWrapOrEmpty().ImGuiHandle, new(40));
         ImGui.SameLine();
-        // TODO: bigger font
-        ImGui.TextUnformatted($"{item.Name} @ {Service.LuminaRow<World>(worldId)?.Name}");
+        using (var _ = ImRaii.Group())
+        {
+            // TODO: bigger font
+            ImGui.TextUnformatted($"{item.Value.Name} @ {Service.LuminaRow<World>(worldId)?.Name}");
+            ImGuiHelpers.SeStringWrapped(item.Value.Description);
+        }
+        if (ImGui.IsItemClicked()) Utils.MakeItemLink(item.Value);
 
         var entry = _mbFetch.CurrentRequest != null && _mbFetch.CurrentRequest.ItemId == itemId && _mbFetch.CurrentRequest.WorldId == worldId ? _mbFetch.CurrentRequest : _cache.GetValueOrDefault((itemId, worldId));
         ImGui.AlignTextToFramePadding();
