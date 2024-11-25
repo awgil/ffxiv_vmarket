@@ -1,8 +1,7 @@
-﻿using Dalamud.Interface.Utility.Raii;
-using ImGuiNET;
+﻿using ImGuiNET;
+using Lumina.Excel;
 using Lumina.Excel.Sheets;
 using Lumina.Extensions;
-using System.Numerics;
 using System.Text;
 
 namespace Market.Widget.Filters;
@@ -26,7 +25,7 @@ internal class EquipAsFilter : Filter
     }
 
     private List<uint> selectedClassJobs;
-    private readonly List<ClassJobCategory> classJobCategories;
+    private readonly ExcelSheet<RawRow> cjcSheet;
     private readonly List<ClassJob> classJobs;
     private bool changed;
     private bool selectingClasses;
@@ -35,7 +34,7 @@ internal class EquipAsFilter : Filter
     public EquipAsFilter()
     {
         selectedClassJobs = [];
-        classJobCategories = [.. Service.LuminaSheet<ClassJobCategory>()!];
+        cjcSheet = Service.DataManager.GetExcelSheet<RawRow>(null, "ClassJobCategory");
         classJobs = [.. Service.LuminaSheet<ClassJob>()!
             .Where(cj => cj.RowId != 0)
             .OrderBy(cj => {
@@ -58,22 +57,19 @@ internal class EquipAsFilter : Filter
         {
             if (item.ClassJobCategory.RowId != 0)
             {
-                ClassJobCategory cjc = classJobCategories[(int)item.ClassJobCategory.RowId];
-
+                var row = cjcSheet.GetRow(item.ClassJobCategory.RowId);
                 if (selectedMode == 0)
                 {
                     foreach (uint cjid in selectedClassJobs)
-                        if (cjc.HasClass(cjid))
+                        if (row.HasClass(cjid))
                             return true;
-
                     return false;
                 }
                 else
                 {
                     foreach (uint cjid in selectedClassJobs)
-                        if (!cjc.HasClass(cjid))
+                        if (!row.HasClass(cjid))
                             return false;
-
                     return true;
                 }
             }
@@ -204,52 +200,5 @@ internal class EquipAsFilter : Filter
 
 public static class ClassExtensions
 {
-    public static bool HasClass(this ClassJobCategory cjc, uint classJobRowId)
-    {
-        return classJobRowId switch
-        {
-            0 => cjc.ADV,
-            1 => cjc.GLA,
-            2 => cjc.PGL,
-            3 => cjc.MRD,
-            4 => cjc.LNC,
-            5 => cjc.ARC,
-            6 => cjc.CNJ,
-            7 => cjc.THM,
-            8 => cjc.CRP,
-            9 => cjc.BSM,
-            10 => cjc.ARM,
-            11 => cjc.GSM,
-            12 => cjc.LTW,
-            13 => cjc.WVR,
-            14 => cjc.ALC,
-            15 => cjc.CUL,
-            16 => cjc.MIN,
-            17 => cjc.BTN,
-            18 => cjc.FSH,
-            19 => cjc.PLD,
-            20 => cjc.MNK,
-            21 => cjc.WAR,
-            22 => cjc.DRG,
-            23 => cjc.BRD,
-            24 => cjc.WHM,
-            25 => cjc.BLM,
-            26 => cjc.ACN,
-            27 => cjc.SMN,
-            28 => cjc.SCH,
-            29 => cjc.ROG,
-            30 => cjc.NIN,
-            31 => cjc.MCH,
-            32 => cjc.DRK,
-            33 => cjc.AST,
-            34 => cjc.SAM,
-            35 => cjc.RDM,
-            36 => cjc.BLU,
-            37 => cjc.GNB,
-            38 => cjc.DNC,
-            39 => cjc.RPR,
-            40 => cjc.SGE,
-            _ => false,
-        };
-    }
+    public static bool HasClass(this RawRow cjc, uint classJobRowId) => cjc.ReadBoolColumn((int)(classJobRowId + 1));
 }
